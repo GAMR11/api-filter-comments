@@ -22,14 +22,13 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# IMPORTANTE: Actualizar con tu URL de Firebase después del deploy
+# Actualizar con tu URL de Firebase después del deploy
 origins = [
-    "http://localhost",
-    "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://*.web.app",  # Todos los subdominios de Firebase
-    "https://*.firebaseapp.com",  # Todos los subdominios de Firebase
+    "https://*.railway.app",  # ← Importante para Railway
+    "https://*.web.app",
+    "https://*.firebaseapp.com",
 ]
 
 app.add_middleware(
