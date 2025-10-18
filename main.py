@@ -43,21 +43,12 @@ app = FastAPI(
  version="2.0.0"
 )
 
-# Actualizar con tu URL de Firebase después del deploy
-# origins = [
-#  "http://localhost:5173",
-#  "http://127.0.0.1:5173",
-#  "https://*.railway.app",
-#  "https://*.web.app",
-#  "https://*.firebaseapp.com",
-# ]
 
 origins = [
-    "http://localhost",
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000",
+    # "http://localhost:5173",
+    # "http://127.0.0.1:5173",
+    # "http://127.0.0.1:8000",
+    "frontend-filter-comments-r9i629d7w.vercel.app"
 ]
 
 app.add_middleware(
