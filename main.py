@@ -48,7 +48,9 @@ origins = [
     # "http://localhost:5173",
     # "http://127.0.0.1:5173",
     # "http://127.0.0.1:8000",
-    "frontend-filter-comments-r9i629d7w.vercel.app"
+    "frontend-filter-comments-r9i629d7w.vercel.app",
+    "https://frontend-filter-comments.vercel.app",
+    "https://*.vercel.app",
 ]
 
 app.add_middleware(
