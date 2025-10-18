@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware # 👈 Importación de CORS
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import pipeline
 import pandas as pd
@@ -13,40 +13,35 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------
-#     CONFIGURACIÓN DE FASTAPI y CORS
+#     CONFIGURACIÓN DE FASTAPI y CORS
 # ----------------------------------------------------
 
-# Inicializar FastAPI
 app = FastAPI(
     title="API de Análisis de Sentimientos",
     description="API para analizar sentimientos en comentarios usando Hugging Face",
-    version="1.0.0"
+    version="2.0.0"
 )
 
-# Definir los orígenes permitidos.
-# IMPORTANTE: Reemplaza o añade el puerto de tu frontend de React (ej. 3000, 5173).
 origins = [
     "http://localhost",
-    "http://localhost:3000",# Origen común de React (Create React App)
-    "http://localhost:5173",# Origen común de React (Vite)
-    "http://127.0.0.1:8000",# Tu propio backend
-    # "https://tu-dominio-frontend.com" # Si lo despliegas
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
 ]
 
-# Agregar el middleware de CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # Lista de orígenes permitidos
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Permite todos los métodos (GET, POST, etc.)
-    allow_headers=["*"], # Permite todos los headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ----------------------------------------------------
-#     MODELO Y LÓGICA DE NEGOCIO
+#     MODELO Y LÓGICA DE NEGOCIO
 # ----------------------------------------------------
 
-# Modelo de sentimientos en español (carga al iniciar)
 sentiment_analyzer = None
 
 @app.on_event("startup")
@@ -55,18 +50,25 @@ async def load_model():
     global sentiment_analyzer
     try:
         logger.info("Cargando modelo de análisis de sentimientos...")
+        
+        # Usamos modelo BETO especializado para comentarios formales e informales en español.
         sentiment_analyzer = pipeline(
             "sentiment-analysis",
-            model="nlptown/bert-base-multilingual-uncased-sentiment"
+            model="finiteautomata/beto-sentiment-analysis"
         )
-        logger.info("Modelo cargado exitosamente")
+        
+        # OPCIÓN 2: Si prefieres otro modelo, descomenta:
+        # sentiment_analyzer = pipeline(
+        #     "sentiment-analysis",
+        #     model="cardiffnlp/twitter-xlm-roberta-base-sentiment-multilingual"
+        # )
+        
+        logger.info("✅ Modelo cargado exitosamente")
     except Exception as e:
-        logger.error(f"Error al cargar el modelo: {e}")
-        # Es mejor no levantar la excepción para permitir que la API arranque si el modelo falla
-        # pero para el contexto de este ejercicio, la mantenemos como está.
-        # raise
+        logger.error(f"❌ Error al cargar el modelo: {e}")
+        logger.info("Intenta instalar: pip install pysentimiento")
 
-# Modelos Pydantic para request/response
+# Modelos Pydantic
 class CommentRequest(BaseModel):
     comentario: str
 
@@ -84,77 +86,95 @@ class BatchSentimentResult(BaseModel):
     porcentaje_neutral: float
     comentarios_analizados: List[SentimentResult]
 
-class HealthCheckResponse(BaseModel): # 👈 Agregamos el Pydantic Model para Health Check
+class HealthCheckResponse(BaseModel):
     status: str
     modelo_cargado: bool
+    modelo_nombre: str
 
 def analizar_sentimiento(texto: str) -> Dict:
     """
-    Analiza el sentimiento de un texto y mapea las 1-5 estrellas a etiquetas (Positivo, Negativo, Neutral)
+    Analiza el sentimiento de un texto usando el modelo mejorado
     """
-    # Manejo de casos donde sentiment_analyzer no pudo cargar
     if sentiment_analyzer is None:
-         logger.warning("Modelo no disponible, retornando resultado dummy.")
-         return {
+        logger.warning("Modelo no disponible.")
+        return {
             "comentario": texto,
             "etiqueta": "Neutral",
             "confianza": 50.0,
             "porcentaje_positivo": 50.0,
             "porcentaje_negativo": 50.0
-         }
+        }
 
-    # Limitar a 512 caracteres para el modelo
-    resultado = sentiment_analyzer(texto[:512])[0]
+    try:
+        # Limitar a 512 caracteres
+        resultado = sentiment_analyzer(texto[:512])[0]
+        
+        label = resultado['label'].upper()
+        score = resultado['score']
+        
+        # Mapeo de etiquetas del modelo BETO
+        # El modelo retorna: POS, NEG, NEU
+        if label in ['POS', 'POSITIVE']:
+            sentimiento = "Positivo"
+            porcentaje_positivo = score * 100
+            porcentaje_negativo = (1 - score) * 100
+        elif label in ['NEG', 'NEGATIVE']:
+            sentimiento = "Negativo"
+            porcentaje_negativo = score * 100
+            porcentaje_positivo = (1 - score) * 100
+        else:  # NEU, NEUTRAL
+            sentimiento = "Neutral"
+            # Para neutral, distribuimos más equitativamente
+            porcentaje_positivo = 50.0
+            porcentaje_negativo = 50.0
+            score = 0.5  # Ajustamos la confianza para neutral
+        
+        return {
+            "comentario": texto,
+            "etiqueta": sentimiento,
+            "confianza": round(score * 100, 2),
+            "porcentaje_positivo": round(porcentaje_positivo, 2),
+            "porcentaje_negativo": round(porcentaje_negativo, 2)
+        }
     
-    label = resultado['label']
-    score = resultado['score']
-    
-    # Lógica de mapeo
-    if '1 star' in label or '2 stars' in label:
-        sentimiento = "Negativo"
-        porcentaje_negativo = score * 100
-        porcentaje_positivo = (1 - score) * 100
-    elif '4 stars' in label or '5 stars' in label:
-        sentimiento = "Positivo"
-        porcentaje_positivo = score * 100
-        porcentaje_negativo = (1 - score) * 100
-    else:
-        sentimiento = "Neutral"
-        porcentaje_positivo = 50.0
-        porcentaje_negativo = 50.0
-    
-    return {
-        "comentario": texto,
-        "etiqueta": sentimiento,
-        "confianza": round(score * 100, 2),
-        "porcentaje_positivo": round(porcentaje_positivo, 2),
-        "porcentaje_negativo": round(porcentaje_negativo, 2)
-    }
+    except Exception as e:
+        logger.error(f"Error en análisis: {e}")
+        # Fallback en caso de error
+        return {
+            "comentario": texto,
+            "etiqueta": "Neutral",
+            "confianza": 50.0,
+            "porcentaje_positivo": 50.0,
+            "porcentaje_negativo": 50.0
+        }
 
 # ----------------------------------------------------
-#     ENDPOINTS
+#     ENDPOINTS
 # ----------------------------------------------------
 
 @app.get("/")
 async def root():
     """Endpoint de bienvenida"""
     return {
-        "mensaje": "API de Análisis de Sentimientos",
-        "version": "1.0.0",
+        "mensaje": "API de Análisis de Sentimientos v2.0",
+        "version": "2.0.0",
+        "modelo": "BETO Sentiment Analysis (español)",
         "endpoints": {
             "analizar_comentario": "/analizar",
             "analizar_csv": "/analizar-csv",
+            "analizar_excel": "/analizar-excel",
             "documentacion": "/docs",
             "salud": "/health"
         }
     }
 
-@app.get("/health", response_model=HealthCheckResponse) # 👈 Añadido response_model
+@app.get("/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Verifica el estado de la API, esencial para el frontend."""
+    """Verifica el estado de la API"""
     return {
-        "status": "healthy",
-        "modelo_cargado": sentiment_analyzer is not None
+        "status": "healthy" if sentiment_analyzer is not None else "degraded",
+        "modelo_cargado": sentiment_analyzer is not None,
+        "modelo_nombre": "finiteautomata/beto-sentiment-analysis"
     }
 
 @app.post("/analizar", response_model=SentimentResult)
@@ -167,10 +187,11 @@ async def analizar_comentario(request: CommentRequest):
         resultado = analizar_sentimiento(request.comentario)
         return resultado
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error al analizar comentario: {e}")
-        # Retorna el error 500 para debug.
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
 
 @app.post("/analizar-csv", response_model=BatchSentimentResult)
 async def analizar_csv(file: UploadFile = File(...)):
@@ -182,6 +203,7 @@ async def analizar_csv(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
         
+        # Buscar columna de comentarios
         columna_comentarios = None
         for col in ['comentario', 'comentarios', 'texto', 'comment', 'text']:
             if col in df.columns:
@@ -191,14 +213,15 @@ async def analizar_csv(file: UploadFile = File(...)):
         if columna_comentarios is None:
             raise HTTPException(
                 status_code=400,
-                detail="No se encontró columna 'comentario' o 'texto' en el CSV"
+                detail=f"No se encontró columna válida. Columnas disponibles: {list(df.columns)}"
             )
         
+        # Procesar comentarios
         resultados = []
-        # Solo procesar filas con contenido
         for comentario in df[columna_comentarios].dropna():
-            resultado = analizar_sentimiento(str(comentario))
-            resultados.append(resultado)
+            if str(comentario).strip():  # Validar que no esté vacío
+                resultado = analizar_sentimiento(str(comentario))
+                resultados.append(resultado)
         
         total = len(resultados)
         if total == 0:
@@ -222,11 +245,15 @@ async def analizar_csv(file: UploadFile = File(...)):
             "comentarios_analizados": resultados
         }
     
+    except HTTPException:
+        raise
     except pd.errors.EmptyDataError:
-        raise HTTPException(status_code=400, detail="El archivo CSV está vacío o no es válido")
+        raise HTTPException(status_code=400, detail="El archivo CSV está vacío")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Error de codificación. Asegúrate de que el CSV esté en UTF-8")
     except Exception as e:
         logger.error(f"Error al procesar CSV: {e}")
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar archivo: {str(e)}")
 
 @app.post("/analizar-excel", response_model=BatchSentimentResult)
 async def analizar_excel(file: UploadFile = File(...)):
@@ -238,6 +265,7 @@ async def analizar_excel(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
         
+        # Buscar columna de comentarios
         columna_comentarios = None
         for col in ['comentario', 'comentarios', 'texto', 'comment', 'text']:
             if col in df.columns:
@@ -247,13 +275,15 @@ async def analizar_excel(file: UploadFile = File(...)):
         if columna_comentarios is None:
             raise HTTPException(
                 status_code=400,
-                detail="No se encontró columna 'comentario' o 'texto' en el Excel"
+                detail=f"No se encontró columna válida. Columnas disponibles: {list(df.columns)}"
             )
         
+        # Procesar comentarios
         resultados = []
         for comentario in df[columna_comentarios].dropna():
-            resultado = analizar_sentimiento(str(comentario))
-            resultados.append(resultado)
+            if str(comentario).strip():
+                resultado = analizar_sentimiento(str(comentario))
+                resultados.append(resultado)
         
         total = len(resultados)
         if total == 0:
@@ -277,12 +307,12 @@ async def analizar_excel(file: UploadFile = File(...)):
             "comentarios_analizados": resultados
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error al procesar Excel: {e}")
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar archivo: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    # Se usa 0.0.0.0 para que sea accesible desde el exterior del contenedor/entorno,
-    # pero sigue accesible como localhost:8000 desde tu máquina.
     uvicorn.run(app, host="0.0.0.0", port=8000)
