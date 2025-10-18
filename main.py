@@ -1,10 +1,10 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import pipeline
 import pandas as pd
 import io
+import os
 from typing import List, Dict
 import logging
 
@@ -22,12 +22,14 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# IMPORTANTE: Actualizar con tu URL de Firebase después del deploy
 origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000",
+    "https://*.web.app",  # Todos los subdominios de Firebase
+    "https://*.firebaseapp.com",  # Todos los subdominios de Firebase
 ]
 
 app.add_middleware(
@@ -49,24 +51,16 @@ async def load_model():
     """Carga el modelo al iniciar la API"""
     global sentiment_analyzer
     try:
-        logger.info("Cargando modelo de análisis de sentimientos...")
+        logger.info("🚀 Iniciando carga del modelo de análisis de sentimientos...")
         
-        # Usamos modelo BETO especializado para comentarios formales e informales en español.
         sentiment_analyzer = pipeline(
             "sentiment-analysis",
             model="finiteautomata/beto-sentiment-analysis"
         )
         
-        # OPCIÓN 2: Si prefieres otro modelo, descomenta:
-        # sentiment_analyzer = pipeline(
-        #     "sentiment-analysis",
-        #     model="cardiffnlp/twitter-xlm-roberta-base-sentiment-multilingual"
-        # )
-        
         logger.info("✅ Modelo cargado exitosamente")
     except Exception as e:
         logger.error(f"❌ Error al cargar el modelo: {e}")
-        logger.info("Intenta instalar: pip install pysentimiento")
 
 # Modelos Pydantic
 class CommentRequest(BaseModel):
@@ -90,13 +84,12 @@ class HealthCheckResponse(BaseModel):
     status: str
     modelo_cargado: bool
     modelo_nombre: str
+    environment: str
 
 def analizar_sentimiento(texto: str) -> Dict:
-    """
-    Analiza el sentimiento de un texto usando el modelo mejorado
-    """
+    """Analiza el sentimiento de un texto"""
     if sentiment_analyzer is None:
-        logger.warning("Modelo no disponible.")
+        logger.warning("⚠️ Modelo no disponible, retornando resultado dummy.")
         return {
             "comentario": texto,
             "etiqueta": "Neutral",
@@ -106,14 +99,11 @@ def analizar_sentimiento(texto: str) -> Dict:
         }
 
     try:
-        # Limitar a 512 caracteres
         resultado = sentiment_analyzer(texto[:512])[0]
         
         label = resultado['label'].upper()
         score = resultado['score']
         
-        # Mapeo de etiquetas del modelo BETO
-        # El modelo retorna: POS, NEG, NEU
         if label in ['POS', 'POSITIVE']:
             sentimiento = "Positivo"
             porcentaje_positivo = score * 100
@@ -122,12 +112,11 @@ def analizar_sentimiento(texto: str) -> Dict:
             sentimiento = "Negativo"
             porcentaje_negativo = score * 100
             porcentaje_positivo = (1 - score) * 100
-        else:  # NEU, NEUTRAL
+        else:
             sentimiento = "Neutral"
-            # Para neutral, distribuimos más equitativamente
             porcentaje_positivo = 50.0
             porcentaje_negativo = 50.0
-            score = 0.5  # Ajustamos la confianza para neutral
+            score = 0.5
         
         return {
             "comentario": texto,
@@ -139,7 +128,6 @@ def analizar_sentimiento(texto: str) -> Dict:
     
     except Exception as e:
         logger.error(f"Error en análisis: {e}")
-        # Fallback en caso de error
         return {
             "comentario": texto,
             "etiqueta": "Neutral",
@@ -159,6 +147,7 @@ async def root():
         "mensaje": "API de Análisis de Sentimientos v2.0",
         "version": "2.0.0",
         "modelo": "BETO Sentiment Analysis (español)",
+        "status": "online",
         "endpoints": {
             "analizar_comentario": "/analizar",
             "analizar_csv": "/analizar-csv",
@@ -174,7 +163,8 @@ async def health_check():
     return {
         "status": "healthy" if sentiment_analyzer is not None else "degraded",
         "modelo_cargado": sentiment_analyzer is not None,
-        "modelo_nombre": "finiteautomata/beto-sentiment-analysis"
+        "modelo_nombre": "finiteautomata/beto-sentiment-analysis",
+        "environment": os.getenv("RENDER", "local")
     }
 
 @app.post("/analizar", response_model=SentimentResult)
@@ -203,7 +193,6 @@ async def analizar_csv(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
         
-        # Buscar columna de comentarios
         columna_comentarios = None
         for col in ['comentario', 'comentarios', 'texto', 'comment', 'text']:
             if col in df.columns:
@@ -216,10 +205,9 @@ async def analizar_csv(file: UploadFile = File(...)):
                 detail=f"No se encontró columna válida. Columnas disponibles: {list(df.columns)}"
             )
         
-        # Procesar comentarios
         resultados = []
         for comentario in df[columna_comentarios].dropna():
-            if str(comentario).strip():  # Validar que no esté vacío
+            if str(comentario).strip():
                 resultado = analizar_sentimiento(str(comentario))
                 resultados.append(resultado)
         
@@ -265,7 +253,6 @@ async def analizar_excel(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
         
-        # Buscar columna de comentarios
         columna_comentarios = None
         for col in ['comentario', 'comentarios', 'texto', 'comment', 'text']:
             if col in df.columns:
@@ -278,7 +265,6 @@ async def analizar_excel(file: UploadFile = File(...)):
                 detail=f"No se encontró columna válida. Columnas disponibles: {list(df.columns)}"
             )
         
-        # Procesar comentarios
         resultados = []
         for comentario in df[columna_comentarios].dropna():
             if str(comentario).strip():
@@ -313,6 +299,8 @@ async def analizar_excel(file: UploadFile = File(...)):
         logger.error(f"Error al procesar Excel: {e}")
         raise HTTPException(status_code=500, detail=f"Error al procesar archivo: {str(e)}")
 
+# Para Render: obtener puerto de variable de entorno
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
